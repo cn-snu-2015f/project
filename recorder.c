@@ -15,6 +15,10 @@
 #include <libnetfilter_queue/libnetfilter_queue.h>
 
 #define BUFSIZE 2048
+
+#define MY_IP_ADDR "192.168.184.128"
+int id = 4321;
+
 // pcap file descriptor
 pcap_dumper_t *p_output;
 int use_pcap = 0;
@@ -182,13 +186,15 @@ int sendFakeACK(struct nfq_data* nfa){
     memcpy(iph, nf_packet, sizeof(struct iphdr));
 
     // fix ip header
+    u_int16_t ori_tot_len = ntohs(iph->tot_len);
     struct iphdr * nf_packet_iphdr = nf_packet;
     memcpy(&iph->saddr, &nf_packet_iphdr->daddr, sizeof(u_int32_t));
     memcpy(&iph->daddr, &nf_packet_iphdr->saddr, sizeof(u_int32_t));
-    iph->ttl = 255;
+    iph->ttl = 64;
     iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
     iph->check = 0;
     iph->check = ipcsum((unsigned short *) datagram, 10); //because ip header is always 20 byte / 2 byte
+    iph->id = htons(id++);
 
     // copy tcp header
     // if TCP
@@ -211,14 +217,16 @@ int sendFakeACK(struct nfq_data* nfa){
     memcpy(&tcph->dest, &nf_packet_tcphdr->source, sizeof(u_short));
     memcpy(&tcph->ack_seq, &nf_packet_tcphdr->seq, sizeof(u_int32_t));
     memcpy(&tcph->seq, &nf_packet_tcphdr->ack_seq, sizeof(u_int32_t));
-    tcph->ack=1;
     u_int32_t tcp_len = 0;
     if(tcph->syn == 1){
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
+        if(tcph->ack == 1)
+            tcph->syn = 0;
     }
     else{
-        //TODO
+        tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + ori_tot_len - 40);
     }
+    tcph->ack = 1;
 //    tcph->ack_seq = tcph->ack_seq + tcph->doff;
     tcph->check = 0;
     tcph->check = tcpcsum((unsigned short *) datagram, sizeof(struct tcphdr));
@@ -338,6 +346,37 @@ static u_int32_t record_pkt (struct nfq_data *tb){
     return 0;
 }
 
+int is_output_and_ack(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
+    int is_input = ( strcmp(inet_ntoa(*(struct in_addr *)&iph->saddr),MY_IP_ADDR) );
+    printf("my ip addr : %s\n", MY_IP_ADDR);
+    printf("iph->saddr : %s\n", inet_ntoa(*(struct in_addr *)&iph->saddr));
+    return (is_input == 0) * (ntohs(iph->tot_len) == 40);
+}
+
+int is_syn(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
+    return (tcph->syn);
+}
+
+int is_fake(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    u_int16_t local_id = ntohs(iph->id);
+    if(id >= local_id){
+        return (id - local_id) < 10;
+    }
+    else{
+        return (local_id - id) < 10;
+    }
+}
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
@@ -346,13 +385,21 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
     if(use_pcap == 1)
         record_pkt(nfa);
 
-    debug_mycsum(nfa);
-    int is_tcp = sendFakeACK(nfa);
-
-    if (1)
-        return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
-    else
-        return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+//    debug_mycsum(nfa);
+    if(is_output_and_ack(nfa)){
+        if(is_fake(nfa))
+            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+        else
+            return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+    }
+    else{
+        if(is_syn(nfa))
+            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+        else{
+            int is_tcp = sendFakeACK(nfa);
+            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+        }
+    }
 }
 
 int main(int argc, char **argv)
@@ -443,7 +490,7 @@ int main(int argc, char **argv)
 	fd = nfnl_fd(nh);
 
 	while ((rv = recv(fd, buf, sizeof(buf), 0)) && rv >= 0) {
-        printf("-- New packet received --\n");
+        printf("-- New packet received on queue --\n");
 
 		nfq_handle_packet(h, buf, rv);
 	}
