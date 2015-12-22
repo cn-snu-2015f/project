@@ -13,10 +13,13 @@
 #include <arpa/inet.h>
 #include <linux/netfilter.h>		/* for NF_ACCEPT */
 #include <libnetfilter_queue/libnetfilter_queue.h>
+#include <time.h> //nanosleep
 
-#define BUFSIZE 2048
+#define BUFSIZE 2048 * 2048
 
 #define MY_IP_ADDR "192.168.184.128"
+#define IP_DF 0x4000
+#define WINDOW_SIZE 29200
 int id = 4321;
 
 // pcap file descriptor
@@ -162,12 +165,10 @@ void debug_mycsum(struct nfq_data* nfa){
     return;
 } 
 
+int s; //socket for fake ACK
+
 int sendFakeACK(struct nfq_data* nfa){
-    int s = socket(PF_INET, SOCK_RAW, IPPROTO_TCP);
-    if( s == -1 ){
-        printf("Failed to create socket for fake ACK\n");
-        exit(1);
-    }
+    
     char datagram[4096], source_ip[32], *data, *pseudogram;
     memset (datagram, 0, 4096);
     struct iphdr *iph = (struct iphdr *) datagram;
@@ -178,7 +179,6 @@ int sendFakeACK(struct nfq_data* nfa){
     // get packet information
     char *nf_packet;
     int payload_len = nfq_get_payload(nfa, &nf_packet);
-
 
     // we're sending ACK, so no data
 
@@ -193,6 +193,7 @@ int sendFakeACK(struct nfq_data* nfa){
     iph->ttl = 64;
     iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
     iph->check = 0;
+    iph->frag_off |= htons(IP_DF);
     iph->check = ipcsum((unsigned short *) datagram, 10); //because ip header is always 20 byte / 2 byte
     iph->id = htons(id++);
 
@@ -223,13 +224,19 @@ int sendFakeACK(struct nfq_data* nfa){
         if(tcph->ack == 1)
             tcph->syn = 0;
     }
+    else if((tcph->fin == 1) && (tcph->ack == 1)){
+        tcph->fin = 0;
+        tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
+    }
     else{
-        tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + ori_tot_len - 40);
+        printf("%u\n",4*(iph->ihl+tcph->doff));
+        tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + ori_tot_len - 4*(iph->ihl+tcph->doff));
     }
     tcph->ack = 1;
+    tcph->window = htons(WINDOW_SIZE);
 //    tcph->ack_seq = tcph->ack_seq + tcph->doff;
     tcph->check = 0;
-    tcph->check = tcpcsum((unsigned short *) datagram, sizeof(struct tcphdr));
+    tcph->check = tcpcsum((unsigned short *) datagram, sizeof( struct tcphdr));
 
     // setup sin
     sin.sin_family = AF_INET;
@@ -241,15 +248,7 @@ int sendFakeACK(struct nfq_data* nfa){
     print_iphdr(iph);
     print_tcphdr(tcph);
 
-    //IP_HDRINCL to tell the kernel that headers are included in the packet
-    int one = 1;
-    const int *val = &one;
-     
-    if (setsockopt (s, IPPROTO_IP, IP_HDRINCL, val, sizeof (one)) < 0)
-    {
-        perror("Error setting IP_HDRINCL");
-        exit(0);
-    }
+
 
      
     //Send the packet
@@ -346,15 +345,23 @@ static u_int32_t record_pkt (struct nfq_data *tb){
     return 0;
 }
 
-int is_output_and_ack(struct nfq_data *nfa){
+int is_input(struct nfq_data *nfa){
     char *nf_packet;
     u_int16_t len = nfq_get_payload(nfa, &nf_packet);
     struct iphdr * iph = (struct iphdr *)nf_packet;
     struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
     int is_input = ( strcmp(inet_ntoa(*(struct in_addr *)&iph->saddr),MY_IP_ADDR) );
-    printf("my ip addr : %s\n", MY_IP_ADDR);
-    printf("iph->saddr : %s\n", inet_ntoa(*(struct in_addr *)&iph->saddr));
-    return (is_input == 0) * (ntohs(iph->tot_len) == 40);
+//    printf("my ip addr : %s\n", MY_IP_ADDR);
+//    printf("iph->saddr : %s\n", inet_ntoa(*(struct in_addr *)&iph->saddr));
+    return is_input;
+}
+
+int is_ack(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
+    return (tcph->ack) * (ntohs(iph->tot_len) == 40);
 }
 
 int is_syn(struct nfq_data *nfa){
@@ -363,6 +370,22 @@ int is_syn(struct nfq_data *nfa){
     struct iphdr * iph = (struct iphdr *)nf_packet;
     struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
     return (tcph->syn);
+}
+
+int is_fin(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
+    return (tcph->fin);
+}
+
+int is_rst(struct nfq_data *nfa){
+    char *nf_packet;
+    u_int16_t len = nfq_get_payload(nfa, &nf_packet);
+    struct iphdr * iph = (struct iphdr *)nf_packet;
+    struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
+    return (tcph->rst);
 }
 
 int is_fake(struct nfq_data *nfa){
@@ -378,6 +401,8 @@ int is_fake(struct nfq_data *nfa){
     }
 }
 
+struct timespec tim, tim2;
+
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
 {
@@ -386,18 +411,53 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
         record_pkt(nfa);
 
 //    debug_mycsum(nfa);
-    if(is_output_and_ack(nfa)){
-        if(is_fake(nfa))
-            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
-        else
-            return nfq_set_verdict(qh, id, NF_DROP, 0, NULL);
+
+    unsigned char *nf_packet;
+    u_int32_t len = nfq_get_payload(nfa, &nf_packet);    
+
+    // classify packet
+    if(is_input(nfa)){
+        if(is_syn(nfa) && is_ack(nfa)){
+            sendFakeACK(nfa);
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
+        else if(is_syn(nfa)){
+            sendFakeACK(nfa);
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
+        else if(is_fin(nfa) && is_ack(nfa)){
+            sendFakeACK(nfa);
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
+        else if(is_rst(nfa)){
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
+        else if(is_ack(nfa)){
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
+        else{
+            sendFakeACK(nfa);
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
     }
     else{
-        if(is_syn(nfa))
-            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+        if(is_fake(nfa)){
+            return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+        }
         else{
-            int is_tcp = sendFakeACK(nfa);
-            return nfq_set_verdict(qh, id, NF_ACCEPT, 0, NULL);
+            if(is_fin(nfa) && is_ack(nfa)){
+                 return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+            }
+            else if(is_rst(nfa)){
+                 return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+            }
+            else if(is_ack(nfa)){
+                 printf("^^^^ dropped ^^^^\n");
+                 return nfq_set_verdict(qh, id, NF_DROP, len, nf_packet);
+            }
+            else{
+                 return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
+            }
         }
     }
 }
@@ -413,6 +473,28 @@ int main(int argc, char **argv)
 	char buf[BUFSIZE];
     char *pcap_destination;
     pcap_t *pd;
+
+    //setup delay
+    tim.tv_sec = 0;
+    tim.tv_nsec = 100000;
+
+    // socket for fake ACK
+    s = socket(PF_INET, SOCK_RAW, IPPROTO_TCP);
+    if( s == -1 ){
+        printf("Failed to create socket for fake ACK\n");
+        exit(1);
+    }
+
+
+    //IP_HDRINCL to tell the kernel that headers are included in the packet
+    int one = 1;
+    const int *val = &one;
+     
+    if (setsockopt (s, IPPROTO_IP, IP_HDRINCL, val, sizeof (one)) < 0)
+    {
+        perror("Error setting IP_HDRINCL");
+        exit(0);
+    }
 
 	/*! process arguments
 	 */
@@ -494,18 +576,20 @@ int main(int argc, char **argv)
 
 		nfq_handle_packet(h, buf, rv);
 	}
-
+/*
 	printf("unbinding from queue 0\n");
 	nfq_destroy_queue(qh);
 
 #ifdef INSANE
 	/* normally, applications SHOULD NOT issue this command, since
 	 * it detaches other programs/sockets from AF_INET, too ! */
+/*
 	printf("unbinding from AF_INET\n");
 	nfq_unbind_pf(h, AF_INET);
 #endif
-
+*/
 	printf("closing library handle\n");
+        perror("recv error");
 	nfq_close(h);
 
 	exit(0);
