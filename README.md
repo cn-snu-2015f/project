@@ -5,14 +5,19 @@
 # Kernel Space
 - Working directory: build_dir/target-mips_34kc_uClibc-0.9.33.2/linux-ar71xx_generic/compat-wireless-2014-05-22/drivers/net/wireless/ath/ath9k/
 - Modified file: xmit.c
+- Test Method
+ - xmit.c를 저 경로에 넣고 컴파일 후 나온 ath9k.ko, ath9k_hw.ko, ath9k_common.ko를 openwrt에 넣고 실행
+ - cat /proc/kmsg 또는 bmesg를 통하여 나오는 커널메시지를 확인
 
 # User Space
 - C file: recorder.c
 - Compile: gcc -w -o recorder recorder.c -lpcap -lnetfilter_queue -lnfnetlink
- - preset:<br>
-  - sudo iptables -F<br>
-  - sudo iptables -A OUTPUT -p tcp -j NFQUEUE<br>
-  - sudo iptables -A INPUT -p tcp -j NFQUEUE<br>
+ - Test Method<br>
+ - sudo ./recorder 실행. Real TCP ACK를 drop하고 싶으면 sudo ./recorder -d 로 실행
+ - 아래 iptables 3줄 실행
+ - sudo iptables -F<br>
+ - sudo iptables -A OUTPUT -p tcp -j NFQUEUE<br>
+ - sudo iptables -A INPUT -p tcp -j NFQUEUE<br>
 - Cross Compile: mips-openwrt-linux-gcc -w -o recorder recorder.c -I$BUILDROOT/include -L$BUILDROOT/lib -o test -lnfnetlink -lnetfilter_queue -lmnl
  - $BUILDROOT = openwrt/staging_dir/target-mips_34kc_uClibc-0.9.33.2/usr/
  - libnetfilter-queue 폴더를 openwrt/package/lib에 넣는다.
