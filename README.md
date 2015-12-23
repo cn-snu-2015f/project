@@ -28,3 +28,12 @@
  - 미구현
 - 원래 생성되는 TCP ACK을 Drop한다. 
  - 완료
+
+# 테스트 방법
+- recorder.c
+ - 준비물 : server computer, client computer
+ - server computer에서 서버를 연다. (ex : Berryz WebShare - http 파일 서버)
+ - client computer에 recorder.c를 설치하고 preset과 컴파일을 한다.
+ - client computer에서 sudo ./recorder로 recorder를 실행시킨다.
+ - client computer에서 server computer의 서버로 접속을 시도한다.
+ - server computer에서 wireshark로 client computer에서 오는 packet을 캡쳐하여 fake ACK를 확인한다.
