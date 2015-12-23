@@ -17,10 +17,10 @@
 
 #define BUFSIZE 2048 * 2048
 
-#define MY_IP_ADDR "192.168.184.128"
+#define MY_IP_ADDR "192.168.1.216"
 #define IP_DF 0x4000
-#define WINDOW_SIZE 29200
-int id = 4321;
+#define WINDOW_SIZE 2920
+int id = 1111;
 
 // pcap file descriptor
 pcap_dumper_t *p_output;
@@ -191,12 +191,21 @@ int sendFakeACK(struct nfq_data* nfa){
     memcpy(&iph->saddr, &nf_packet_iphdr->daddr, sizeof(u_int32_t));
     memcpy(&iph->daddr, &nf_packet_iphdr->saddr, sizeof(u_int32_t));
     iph->ttl = 64;
-    iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
+    iph->tot_len = htons(12+sizeof(struct iphdr) + sizeof(struct tcphdr));
     iph->check = 0;
     iph->frag_off |= htons(IP_DF);
     iph->check = ipcsum((unsigned short *) datagram, 10); //because ip header is always 20 byte / 2 byte
     iph->id = htons(id++);
-
+	{
+		uint32_t temp_addr;
+		inet_aton(MY_IP_ADDR, &temp_addr);
+		if (iph->saddr % 0x1000000 != temp_addr % 0x1000000){
+			printf("saddr: %x\n", iph->saddr);
+			printf("saddr is not in subnet\n");
+//			free(iph);
+			return -1;
+		}
+	}
     // copy tcp header
     // if TCP
     struct tcphdr * nf_packet_tcphdr = nf_packet + (iph->ihl << 2);
@@ -219,6 +228,7 @@ int sendFakeACK(struct nfq_data* nfa){
     memcpy(&tcph->ack_seq, &nf_packet_tcphdr->seq, sizeof(u_int32_t));
     memcpy(&tcph->seq, &nf_packet_tcphdr->ack_seq, sizeof(u_int32_t));
     u_int32_t tcp_len = 0;
+    tcph->psh = 0;
     if(tcph->syn == 1){
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
         if(tcph->ack == 1)
@@ -248,14 +258,24 @@ int sendFakeACK(struct nfq_data* nfa){
     print_iphdr(iph);
     print_tcphdr(tcph);
 
-
+	datagram[40] = 1;
+	datagram[41] = 1;
 
      
     //Send the packet
-    if (sendto (s, datagram, ntohs(iph->tot_len), 0, (struct sockaddr *) &sin, sizeof (sin)) < 0)
+    if (sendto (s, datagram, ntohs(iph->tot_len), 0, (struct sockaddr *) &sin, sizeof (sin)) < 0){
+//		printf("sento failed\n");
+//		free(iph);
+//		free(tcph);
         perror("sendto failed");
+	}
     else
+	{
+//		printf("send ok\n");
+//		free(iph);
+//		free(tcph);
         printf ("Packet Send. Length : %d \n\n" , ntohs(iph->tot_len));
+	}
      
     return 1;
 }
@@ -361,7 +381,7 @@ int is_ack(struct nfq_data *nfa){
     u_int16_t len = nfq_get_payload(nfa, &nf_packet);
     struct iphdr * iph = (struct iphdr *)nf_packet;
     struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
-    return (tcph->ack) * (ntohs(iph->tot_len) == 40);
+    return (tcph->ack) * (ntohs(iph->tot_len) == 52);
 }
 
 int is_syn(struct nfq_data *nfa){
