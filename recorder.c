@@ -13,14 +13,104 @@
 #include <arpa/inet.h>
 #include <linux/netfilter.h>		/* for NF_ACCEPT */
 #include <libnetfilter_queue/libnetfilter_queue.h>
-#include <time.h> //nanosleep
 
 #define BUFSIZE 2048 * 2048
 
 #define MY_IP_ADDR "192.168.184.128"
 #define IP_DF 0x4000
 #define WINDOW_SIZE 29200
-int id = 4321;
+#define MAX_CONNECTION 1024
+
+u_int32_t queue[MAX_CONNECTION][2];
+int eoq = 0;
+
+void print_queue(){
+    int i = 0;
+    printf("eoq : %d\n",eoq);
+    for(i=0;i<eoq;i++)
+        printf("seq : %u, id : %u",queue[i][0],queue[i][1]);
+    printf("\n");
+    return;
+}
+
+void inc_eoq(){
+    eoq++;
+    eoq %= MAX_CONNECTION;
+}
+
+void push(u_int32_t next_seq_num, u_int32_t next_id){
+    queue[eoq][0] = next_seq_num;
+    queue[eoq][1] = next_id;
+    inc_eoq();
+}
+
+void update(u_int32_t idx, u_int32_t next_seq_num, u_int32_t next_id){
+    queue[idx][0] = next_seq_num;
+    queue[idx][1] = next_id;
+}
+
+int find(u_int32_t next_seq_num, u_int32_t next_id){
+    int i;
+    for(i=0;i<MAX_CONNECTION;i++){
+        if( (queue[i][0] == next_seq_num) && (queue[i][1] == next_id) )
+            return i;
+    }
+    return -1;
+}
+
+int get_id_by_seq(u_int32_t seq_num){
+    int i;
+    for(i=0;i<MAX_CONNECTION;i++){
+        if( queue[i][0] == seq_num )
+            return queue[i][1];
+    }
+    return -1;
+}
+
+int exist_by_id(u_int32_t id){
+    int i;
+    for(i=0;i<MAX_CONNECTION;i++){
+        if( queue[i][1] == id )
+            return 1;
+    }
+    return 0;
+}
+
+void cal_id_for_seq(const unsigned char * nf_packet){
+    char datagram[4096];
+    struct iphdr *iph = (struct iphdr *) datagram;
+    struct tcphdr *tcph = (struct tcphdr *) (datagram + sizeof (struct iphdr));
+    // copy ip header
+    memcpy(iph, nf_packet, sizeof(struct iphdr));
+    // copy tcp header
+    struct tcphdr * nf_packet_tcphdr = nf_packet + (iph->ihl << 2);
+    if (iph->protocol == 6){
+        memcpy(tcph, nf_packet_tcphdr, sizeof(struct tcphdr));
+    }
+    
+    u_int32_t next_seq_num;
+    if(tcph->syn == 1){
+        next_seq_num = (ntohl(tcph->seq) + 1);
+    }
+    if((tcph->fin == 1) && (tcph->ack == 1)){
+        next_seq_num = (ntohl(tcph->seq) + 1);
+    }
+    if((tcph->syn == 0) && (tcph->fin == 0)){
+        next_seq_num = (ntohl(tcph->seq) + ntohs(iph->tot_len) - 4*(iph->ihl+tcph->doff));
+    }
+    u_int32_t next_id = ntohs(iph->id) + 1;
+    u_int32_t old_seq_num = ntohl(tcph->seq);
+    u_int32_t old_id = ntohs(iph->id);
+    int idx = find(old_seq_num, old_id);
+    if(idx != -1)
+        update(idx, next_seq_num, next_id);
+    else
+        push(next_seq_num, next_id);
+//    printf(">>>>>>>> cal id for seq >>>>>>\n");
+//    print_queue();
+    return;
+}
+
 
 // pcap file descriptor
 pcap_dumper_t *p_output;
@@ -154,14 +244,14 @@ void debug_mycsum(struct nfq_data* nfa){
         multiple this number by 4 */
         memcpy(tcph, nf_packet_tcphdr, tcp_seq_len);
     }    
-/*
+
     printf("==== ip header checksum answer : %u, %x\n", ntohs(iph->check), iph->check);
     iph->check = 0;
     printf("==== my ipcsum function calculation result : %u\n", ntohs(ipcsum((unsigned short *) datagram, 10)));
     printf("=== tcp header checksum answer : %u, %x\n", ntohs(tcph->check), tcph->check);
     tcph->check = 0;
     printf("=== my tcpcsum function calculation result : %u\n", ntohs(tcpcsum(datagram, tcp_seq_len)));
-*/
+
     return;
 } 
 
@@ -194,8 +284,7 @@ int sendFakeACK(struct nfq_data* nfa){
     iph->tot_len = htons(sizeof(struct iphdr) + sizeof(struct tcphdr));
     iph->check = 0;
     iph->frag_off |= htons(IP_DF);
-    iph->check = ipcsum((unsigned short *) datagram, 10); //because ip header is always 20 byte / 2 byte
-    iph->id = htons(id++);
+
 
     // copy tcp header
     // if TCP
@@ -219,23 +308,36 @@ int sendFakeACK(struct nfq_data* nfa){
     memcpy(&tcph->ack_seq, &nf_packet_tcphdr->seq, sizeof(u_int32_t));
     memcpy(&tcph->seq, &nf_packet_tcphdr->ack_seq, sizeof(u_int32_t));
     u_int32_t tcp_len = 0;
+    tcph->psh = 0;
     if(tcph->syn == 1){
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
         if(tcph->ack == 1)
             tcph->syn = 0;
     }
-    else if((tcph->fin == 1) && (tcph->ack == 1)){
+    if((tcph->fin == 1) && (tcph->ack == 1)){
         tcph->fin = 0;
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
     }
-    else{
+    if((tcph->syn == 0) && (tcph->fin == 0)){
         printf("%u\n",4*(iph->ihl+tcph->doff));
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + ori_tot_len - 4*(iph->ihl+tcph->doff));
     }
     tcph->ack = 1;
     tcph->window = htons(WINDOW_SIZE);
-//    tcph->ack_seq = tcph->ack_seq + tcph->doff;
     tcph->check = 0;
+
+    // figure out id. very dirty.
+    int get_id = get_id_by_seq(ntohl(tcph->seq));
+//    printf("figure out id. very dirty : %d",get_id);
+//    printf(" in u_short : %u\n",(u_short) get_id);
+    if(get_id != -1)
+        iph->id = htons((u_short) get_id);
+    else{
+        iph->id = htons(rand()%9999);
+    }
+    cal_id_for_seq(datagram);
+    iph->check = ipcsum((unsigned short *) datagram, 10); //because ip header is always 20 byte / 2 byte
+
     tcph->check = tcpcsum((unsigned short *) datagram, sizeof( struct tcphdr));
 
     // setup sin
@@ -245,11 +347,6 @@ int sendFakeACK(struct nfq_data* nfa){
 
     //print before sending
     printf("-- Sending Fake ACK --\n");
-    print_iphdr(iph);
-    print_tcphdr(tcph);
-
-
-
      
     //Send the packet
     if (sendto (s, datagram, ntohs(iph->tot_len), 0, (struct sockaddr *) &sin, sizeof (sin)) < 0)
@@ -260,6 +357,33 @@ int sendFakeACK(struct nfq_data* nfa){
     return 1;
 }
 
+
+void print_pkt_fancy(struct nfq_data *tb){
+    char *nf_packet;
+    int ret = nfq_get_payload(tb, &nf_packet);
+    struct iphdr *iph = ((struct iphdr *) nf_packet);
+    struct tcphdr *tcph = ((struct tcphdr *) (nf_packet + sizeof( struct iphdr )));
+    printf("--------------------------------------------------------------------\n");
+    char *saddr = inet_ntoa(*(struct in_addr *)&iph->saddr);
+    printf("saddr : %s => ", saddr);
+    char *daddr = inet_ntoa(*(struct in_addr *)&iph->daddr);
+    printf("daddr : %s\n", daddr);
+    printf("tot_len : %u, seq : %u, ack_seq : %u\n",ntohs(iph->tot_len),ntohl(tcph->seq),ntohl(tcph->ack_seq));
+    printf("id : %u,ipcsum : %u, tcpcsum : %u\n", ntohs(iph->id), ntohs(iph->check), ntohs(tcph->check));
+    if(tcph->urg)
+        printf("URG ");
+    if(tcph->ack)
+        printf("ACK ");
+    if(tcph->psh)
+        printf("PSH ");
+    if(tcph->rst)
+        printf("RST ");
+    if(tcph->syn)
+        printf("SYN ");
+    if(tcph->fin)
+        printf("FIN ");
+    printf("\n--------------------------------------------------------------------\n");
+}
 
 /* returns packet id */
 static u_int32_t print_pkt (struct nfq_data *tb)
@@ -273,37 +397,38 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 	ph = nfq_get_msg_packet_hdr(tb);
 	if (ph){
 		id = ntohl(ph->packet_id);
-		printf("hw_protocol=0x%04x hook=%u id=%u ",
-			ntohs(ph->hw_protocol), ph->hook, id);
+//		printf("hw_protocol=0x%04x hook=%u id=%u ",
+//			ntohs(ph->hw_protocol), ph->hook, id);
 	}
 
 	mark = nfq_get_nfmark(tb);
 	if (mark)
-		printf("mark=%u ", mark);
+//		printf("mark=%u ", mark);
 
 	ifi = nfq_get_indev(tb);
 	if (ifi)
-		printf("indev=%u ", ifi);
+//		printf("indev=%u ", ifi);
 
 	ifi = nfq_get_outdev(tb);
 	if (ifi)
-		printf("outdev=%u ", ifi);
+//		printf("outdev=%u ", ifi);
 
 	ret = nfq_get_payload(tb, &nf_packet);
 	if ((ret >= 0)){
-		printf("payload_len=%d bytes", ret);
-    		fputc('\n', stdout);
+//		printf("payload_len=%d bytes", ret);
+//    		fputc('\n', stdout);
     	}
 
+
     // parse the packet headers
-    struct iphdr *iph = ((struct iphdr *) nf_packet);
-    print_iphdr(iph);
-    // if protocol is tcp
-    if (iph->protocol == 6){
         // extract tcp header from packet
         /* Calculate the size of the IP Header. iph->ihl contains the number of 32 bit
         words that represent the header size. Therfore to get the number of bytes
         multiple this number by 4 */
+/*
+    struct iphdr *iph = ((struct iphdr *) nf_packet);
+    print_iphdr(iph);
+    if (iph->protocol == 6){
         struct tcphdr *tcp = ((struct tcphdr *) (nf_packet + (iph->ihl << 2)));
         print_tcphdr(tcp);
     }
@@ -315,7 +440,8 @@ static u_int32_t print_pkt (struct nfq_data *tb)
     }
 
     fprintf(stdout,"\n");
-
+*/
+    print_pkt_fancy(tb);
 	return id;
 }
 
@@ -392,16 +518,11 @@ int is_fake(struct nfq_data *nfa){
     char *nf_packet;
     u_int16_t len = nfq_get_payload(nfa, &nf_packet);
     struct iphdr * iph = (struct iphdr *)nf_packet;
-    u_int16_t local_id = ntohs(iph->id);
-    if(id >= local_id){
-        return (id - local_id) < 10;
-    }
-    else{
-        return (local_id - id) < 10;
-    }
+    u_int16_t id = ntohs(iph->id) + 1;
+    printf("key id : %u",id);
+    print_queue();
+    return exist_by_id(id);
 }
-
-struct timespec tim, tim2;
 
 static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 	      struct nfq_data *nfa, void *data)
@@ -446,9 +567,11 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
         }
         else{
             if(is_fin(nfa) && is_ack(nfa)){
+                 cal_id_for_seq(nf_packet);
                  return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
             }
             else if(is_rst(nfa)){
+                 cal_id_for_seq(nf_packet);
                  return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
             }
             else if(is_ack(nfa)){
@@ -456,6 +579,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
                  return nfq_set_verdict(qh, id, NF_DROP, len, nf_packet);
             }
             else{
+                 cal_id_for_seq(nf_packet);
                  return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
             }
         }
@@ -474,9 +598,8 @@ int main(int argc, char **argv)
     char *pcap_destination;
     pcap_t *pd;
 
-    //setup delay
-    tim.tv_sec = 0;
-    tim.tv_nsec = 100000;
+    // id table init
+    memset(queue, 0, sizeof(u_int32_t) * MAX_CONNECTION * 2);
 
     // socket for fake ACK
     s = socket(PF_INET, SOCK_RAW, IPPROTO_TCP);
@@ -576,20 +699,20 @@ int main(int argc, char **argv)
 
 		nfq_handle_packet(h, buf, rv);
 	}
-/*
+
 	printf("unbinding from queue 0\n");
 	nfq_destroy_queue(qh);
 
 #ifdef INSANE
 	/* normally, applications SHOULD NOT issue this command, since
 	 * it detaches other programs/sockets from AF_INET, too ! */
-/*
+
 	printf("unbinding from AF_INET\n");
 	nfq_unbind_pf(h, AF_INET);
 #endif
-*/
+
 	printf("closing library handle\n");
-        perror("recv error");
+        perror("error");
 	nfq_close(h);
 
 	exit(0);
