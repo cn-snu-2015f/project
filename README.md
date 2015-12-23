@@ -9,6 +9,10 @@
 # User Space
 - C file: recorder.c
 - Compile: gcc -w -o recorder recorder.c -lpcap -lnetfilter_queue -lnfnetlink
+ - preset:<br>
+  - sudo iptables -F<br>
+  - sudo iptables -A OUTPUT -p tcp -j NFQUEUE<br>
+  - sudo iptables -A INPUT -p tcp -j NFQUEUE<br>
 - Cross Compile: mips-openwrt-linux-gcc -w -o recorder recorder.c -I$BUILDROOT/include -L$BUILDROOT/lib -o test -lnfnetlink -lnetfilter_queue -lmnl
  - $BUILDROOT = openwrt/staging_dir/target-mips_34kc_uClibc-0.9.33.2/usr/
  - libnetfilter-queue 폴더를 openwrt/package/lib에 넣는다.
