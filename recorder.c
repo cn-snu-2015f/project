@@ -21,7 +21,7 @@
 #define IP_DF 0x4000
 #define WINDOW_SIZE 2920
 int id = 1111;
-
+int drop_ack = 1;  // 1 for NF_ACCEPT, 0 for NF_DROP
 // pcap file descriptor
 pcap_dumper_t *p_output;
 int use_pcap = 0;
@@ -40,14 +40,14 @@ void print_iphdr( struct iphdr *iph ){
 
     // display IP HEADERS : ip.h line 45
     // ntohs convert short unsigned int, ntohl do the same for long unsigned int
-    fprintf(stdout, "IP{v=%u; ihl=%u; tos=%u; tot_len=%u; id=%u; ttl=%u; protocol=%u; "
-        ,iph->version, iph->ihl*4, iph->tos, ntohs(iph->tot_len), ntohs(iph->id), iph->ttl, iph->protocol);
+//    fprintf(stdout, "IP{v=%u; ihl=%u; tos=%u; tot_len=%u; id=%u; ttl=%u; protocol=%u; "
+//        ,iph->version, iph->ihl*4, iph->tos, ntohs(iph->tot_len), ntohs(iph->id), iph->ttl, iph->protocol);
 
     char *saddr = inet_ntoa(*(struct in_addr *)&iph->saddr);
-    fprintf(stdout,"saddr=%s; ",saddr);
+//    fprintf(stdout,"saddr=%s; ",saddr);
 
     char *daddr = inet_ntoa(*(struct in_addr *)&iph->daddr);
-    fprintf(stdout,"daddr=%s}\n",daddr);
+ //   fprintf(stdout,"daddr=%s}\n",daddr);
 
 
 }
@@ -61,22 +61,22 @@ void print_tcphdr( struct tcphdr *tcp ){
 
     /* to print the TCP headers, we access the structure defined in tcp.h line 89
     and convert values from hexadecimal to ascii */
-    fprintf(stdout, "TCP{sport=%u; dport=%u; seq=%u; ack_seq=%u; flags=u%ua%up%ur%us%uf%u; window=%u; urg=%u}\n", ntohs(tcp->source), ntohs(tcp->dest), ntohl(tcp->seq), ntohl(tcp->ack_seq),tcp->urg, tcp->ack, tcp->psh, tcp->rst, tcp->syn, tcp->fin, ntohs(tcp->window), tcp->urg_ptr);
+//    fprintf(stdout, "TCP{sport=%u; dport=%u; seq=%u; ack_seq=%u; flags=u%ua%up%ur%us%uf%u; window=%u; urg=%u}\n", ntohs(tcp->source), ntohs(tcp->dest), ntohl(tcp->seq), ntohl(tcp->ack_seq),tcp->urg, tcp->ack, tcp->psh, tcp->rst, tcp->syn, tcp->fin, ntohs(tcp->window), tcp->urg_ptr);
 }
 
 void print_udphdr( struct udphdr * udp ){
-    fprintf(stdout,"UDP{sport=%u; dport=%u; len=%u}\n",
-    ntohs(udp->source), ntohs(udp->dest), udp->len);
+//    fprintf(stdout,"UDP{sport=%u; dport=%u; len=%u}\n",
+//    ntohs(udp->source), ntohs(udp->dest), udp->len);
 }
 
 void print_pkt_raw( unsigned char * nf_packet, int len){
     int i;
-    for(i=0;i<len;i++){
-        if( i%8 == 0)
-            printf("\n");
-        printf("%04x",(int)*(nf_packet+i));
-    }
-    printf("\n");
+//    for(i=0;i<len;i++){
+//        if( i%8 == 0)
+//            printf("\n");
+//        printf("%04x",(int)*(nf_packet+i));
+//    }
+//    printf("\n");
     return;
 }
 
@@ -169,8 +169,8 @@ int s; //socket for fake ACK
 
 int sendFakeACK(struct nfq_data* nfa){
     
-    char datagram[4096], source_ip[32], *data, *pseudogram;
-    memset (datagram, 0, 4096);
+    char datagram[64], source_ip[32], *data, *pseudogram;
+    memset (datagram, 0, 64);
     struct iphdr *iph = (struct iphdr *) datagram;
     struct tcphdr *tcph = (struct tcphdr *) (datagram + sizeof (struct iphdr));
     struct sockaddr_in sin;
@@ -200,8 +200,8 @@ int sendFakeACK(struct nfq_data* nfa){
 		uint32_t temp_addr;
 		inet_aton(MY_IP_ADDR, &temp_addr);
 		if (iph->saddr % 0x1000000 != temp_addr % 0x1000000){
-			printf("saddr: %x\n", iph->saddr);
-			printf("saddr is not in subnet\n");
+//			printf("saddr: %x is not in subnet. pass.\n", iph->saddr);
+//			printf("saddr is not in subnet\n");
 //			free(iph);
 			return -1;
 		}
@@ -218,7 +218,7 @@ int sendFakeACK(struct nfq_data* nfa){
     }
     // if not TCP
     else{
-        printf("-- turns out it's not tcp -- : %u\n",iph->protocol);
+//        printf("-- turns out it's not tcp -- : %u\n",iph->protocol);
         return 0;
     }
 
@@ -239,14 +239,14 @@ int sendFakeACK(struct nfq_data* nfa){
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + 1);
     }
     else{
-        printf("%u\n",4*(iph->ihl+tcph->doff));
+//        printf("%u\n",4*(iph->ihl+tcph->doff));
         tcph->ack_seq = htonl(ntohl(tcph->ack_seq) + ori_tot_len - 4*(iph->ihl+tcph->doff));
     }
     tcph->ack = 1;
     tcph->window = htons(WINDOW_SIZE);
-//    tcph->ack_seq = tcph->ack_seq + tcph->doff;
+    tcph->doff = 32 / 4;
     tcph->check = 0;
-    tcph->check = tcpcsum((unsigned short *) datagram, sizeof( struct tcphdr));
+//    tcph->check = tcpcsum((unsigned short *) datagram, sizeof( struct tcphdr));
 
     // setup sin
     sin.sin_family = AF_INET;
@@ -254,27 +254,61 @@ int sendFakeACK(struct nfq_data* nfa){
     sin.sin_addr.s_addr = inet_ntoa(*(struct in_addr *)&iph->daddr);
 
     //print before sending
-    printf("-- Sending Fake ACK --\n");
-    print_iphdr(iph);
-    print_tcphdr(tcph);
+//    printf("-- Sending Fake ACK --\n");
+//    printf("seq: %x ack: %x\n",tcph->seq, tcph->ack_seq);
+//    print_iphdr(iph);
+//    print_tcphdr(tcph);
+	//printf("%x %x %x %x %x %x %x %x %x %x %x %x\n", nf_packet[40], nf_packet[41], nf_packet[42], nf_packet[43],nf_packet[44], nf_packet[45], nf_packet[46], nf_packet[47], nf_packet[48], nf_packet[49], nf_packet[50], nf_packet[51]);
+	// tcp option field
+	datagram[40] = nf_packet[40]; // nop
+	datagram[41] = nf_packet[41]; // nop
+	datagram[42] = nf_packet[42]; // time stamp option
+	datagram[43] = nf_packet[43]; // length
+	
+	datagram[44] = nf_packet[48];
+	datagram[45] = nf_packet[49];
+	datagram[46] = nf_packet[50];
+	datagram[47] = nf_packet[51];
+	if (datagram[47] == 0xff)
+	{
+		datagram[47] == 0x00;
+		if (datagram[46] == 0xff)
+		{
+			datagram[46] = 0x00;
+			if (datagram[45] == 0xff)
+			{
+				datagram[45] == 0x00;
+				if (datagram[44] == 0xff)
+				{
+					datagram[44] == 0x00;
+				}
+				else datagram[44]++;
+			}
+			else datagram[45]++;
+		}
+		else datagram[46]++;
+	}
+	else datagram[47]++;
 
-	datagram[40] = 1;
-	datagram[41] = 1;
+	datagram[48] = nf_packet[44]; // ack's tsecr
+	datagram[49] = nf_packet[45]; // same as
+	datagram[50] = nf_packet[46]; // data's tsval
+	datagram[51] = nf_packet[47]; // .
 
-     
+  tcph->check = tcpcsum((unsigned short *)datagram, sizeof(struct tcphdr));
     //Send the packet
     if (sendto (s, datagram, ntohs(iph->tot_len), 0, (struct sockaddr *) &sin, sizeof (sin)) < 0){
 //		printf("sento failed\n");
 //		free(iph);
 //		free(tcph);
-        perror("sendto failed");
+//        perror("sendto failed");
 	}
     else
 	{
 //		printf("send ok\n");
 //		free(iph);
 //		free(tcph);
-        printf ("Packet Send. Length : %d \n\n" , ntohs(iph->tot_len));
+//        printf ("Packet Send. Length : %d \n\n" , ntohs(iph->tot_len));
 	}
      
     return 1;
@@ -293,31 +327,31 @@ static u_int32_t print_pkt (struct nfq_data *tb)
 	ph = nfq_get_msg_packet_hdr(tb);
 	if (ph){
 		id = ntohl(ph->packet_id);
-		printf("hw_protocol=0x%04x hook=%u id=%u ",
-			ntohs(ph->hw_protocol), ph->hook, id);
+//		printf("hw_protocol=0x%04x hook=%u id=%u ",
+//			ntohs(ph->hw_protocol), ph->hook, id);
 	}
 
 	mark = nfq_get_nfmark(tb);
-	if (mark)
-		printf("mark=%u ", mark);
+//	if (mark)
+//		printf("mark=%u ", mark);
 
 	ifi = nfq_get_indev(tb);
-	if (ifi)
-		printf("indev=%u ", ifi);
+//	if (ifi)
+//		printf("indev=%u ", ifi);
 
 	ifi = nfq_get_outdev(tb);
-	if (ifi)
-		printf("outdev=%u ", ifi);
+//	if (ifi)
+//		printf("outdev=%u ", ifi);
 
 	ret = nfq_get_payload(tb, &nf_packet);
-	if ((ret >= 0)){
-		printf("payload_len=%d bytes", ret);
-    		fputc('\n', stdout);
-    	}
+//	if ((ret >= 0)){
+//		printf("payload_len=%d bytes", ret);
+//    		fputc('\n', stdout);
+//    	}
 
     // parse the packet headers
     struct iphdr *iph = ((struct iphdr *) nf_packet);
-    print_iphdr(iph);
+//    print_iphdr(iph);
     // if protocol is tcp
     if (iph->protocol == 6){
         // extract tcp header from packet
@@ -325,16 +359,16 @@ static u_int32_t print_pkt (struct nfq_data *tb)
         words that represent the header size. Therfore to get the number of bytes
         multiple this number by 4 */
         struct tcphdr *tcp = ((struct tcphdr *) (nf_packet + (iph->ihl << 2)));
-        print_tcphdr(tcp);
+//        print_tcphdr(tcp);
     }
 
     // if protocol is udp
     if(iph->protocol == 17){
         struct udphdr *udp = ((struct udphdr *) (nf_packet + (iph->ihl << 2)));
-        print_udphdr(udp);
+ //       print_udphdr(udp);
     }
 
-    fprintf(stdout,"\n");
+//    fprintf(stdout,"\n");
 
 	return id;
 }
@@ -370,7 +404,13 @@ int is_input(struct nfq_data *nfa){
     u_int16_t len = nfq_get_payload(nfa, &nf_packet);
     struct iphdr * iph = (struct iphdr *)nf_packet;
     struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
-    int is_input = ( strcmp(inet_ntoa(*(struct in_addr *)&iph->saddr),MY_IP_ADDR) );
+//    int is_input = ( strcmp(inet_ntoa(*(struct in_addr *)&iph->saddr),MY_IP_ADDR) );
+	uint32_t temp_addr;
+	inet_aton(MY_IP_ADDR, &temp_addr);
+	if (iph->saddr %0x1000000 != temp_addr %0x1000000){
+		return 1;
+	} else
+	return 0;
 //    printf("my ip addr : %s\n", MY_IP_ADDR);
 //    printf("iph->saddr : %s\n", inet_ntoa(*(struct in_addr *)&iph->saddr));
     return is_input;
@@ -381,7 +421,7 @@ int is_ack(struct nfq_data *nfa){
     u_int16_t len = nfq_get_payload(nfa, &nf_packet);
     struct iphdr * iph = (struct iphdr *)nf_packet;
     struct tcphdr * tcph = (struct tcphdr *) (nf_packet + sizeof(struct iphdr));
-    return (tcph->ack) * (ntohs(iph->tot_len) == 52);
+    return (tcph->ack) * ((ntohs(iph->tot_len) - 4*(iph->ihl + tcph->doff))==0);
 }
 
 int is_syn(struct nfq_data *nfa){
@@ -414,10 +454,10 @@ int is_fake(struct nfq_data *nfa){
     struct iphdr * iph = (struct iphdr *)nf_packet;
     u_int16_t local_id = ntohs(iph->id);
     if(id >= local_id){
-        return (id - local_id) < 10;
+        return (id - local_id) < 50;
     }
     else{
-        return (local_id - id) < 10;
+        return (local_id - id) < 50;
     }
 }
 
@@ -472,8 +512,8 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
                  return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
             }
             else if(is_ack(nfa)){
-                 printf("^^^^ dropped ^^^^\n");
-                 return nfq_set_verdict(qh, id, NF_DROP, len, nf_packet);
+//                 printf("^^^^ dropped ^^^^\n");
+                 return nfq_set_verdict(qh, id, drop_ack, len, nf_packet);
             }
             else{
                  return nfq_set_verdict(qh, id, NF_ACCEPT, len, nf_packet);
@@ -484,6 +524,7 @@ static int cb(struct nfq_q_handle *qh, struct nfgenmsg *nfmsg,
 
 int main(int argc, char **argv)
 {
+
 	struct nfq_handle *h;
 	struct nfq_q_handle *qh;
 	struct nfnl_handle *nh;
@@ -518,7 +559,7 @@ int main(int argc, char **argv)
 
 	/*! process arguments
 	 */
-	while ( -1 != (argument = getopt (argc, argv, "o:h")))
+	while ( -1 != (argument = getopt (argc, argv, "o:hd")))
 	{
 		switch (argument)
 		{
@@ -529,20 +570,23 @@ int main(int argc, char **argv)
                 use_pcap = 1;
                 break;
             case 'h':
-                fprintf(stdout,"nfqueue_recorder: record/display traffic passing through a netfilter queue\n\n"
+                fprintf(stdout,"recorder: record/display traffic passing through a netfilter queue\n\n"
                     "-h: this help\n"
+                    "-d: drop tcp ack\n"
                     "-o <file> : record in pcap <file>\n"
-                    "\nroute traffic to it using the NFQUEUE target\n"
-                    "\tiptables -I INPUT -p tcp --dport 443 -j NFQUEUE\n"
-                    "\tiptables -I FORWARD -j NFQUEUE\n"
-                    "\nex: ./nfqueue_recorder -o traffic.pcap\n");
+                    "\tHave to do following iptables commands\n"
+                    "\tiptables -A OUTPUT -p tcp -j NFQUEUE\n"
+                    "\tiptables -A INPUT -p tcp -j NFQUEUE\n"
+                    "\nex: ./recorder -o traffic.pcap\n");
                 return 0;
+            case 'd' :
+				drop_ack = 0;
+				break;
             default:
                 fprintf(stdout,"use -h for help\n");
                 return -1;
         }
     }
-
     /*! open dump file
     * using DLT_RAW because iptables does not give us datalink layer
     */
@@ -555,6 +599,13 @@ int main(int argc, char **argv)
             exit(1);
         }
     }
+    if (drop_ack == 0)
+	{
+		fprintf(stdout, "Drop original TCP ACK\n");
+	}
+	else
+		fprintf(stdout, "Preserve original TCP ACK\n");
+
 
 	printf("opening library handle\n");
 	h = nfq_open();
@@ -592,7 +643,7 @@ int main(int argc, char **argv)
 	fd = nfnl_fd(nh);
 
 	while ((rv = recv(fd, buf, sizeof(buf), 0)) && rv >= 0) {
-        printf("-- New packet received on queue --\n");
+  //      printf("-- New packet received on queue --\n");
 
 		nfq_handle_packet(h, buf, rv);
 	}
@@ -608,7 +659,7 @@ int main(int argc, char **argv)
 	nfq_unbind_pf(h, AF_INET);
 #endif
 */
-	printf("closing library handle\n");
+//	printf("closing library handle\n");
         perror("recv error");
 	nfq_close(h);
 
