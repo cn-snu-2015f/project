@@ -75,6 +75,9 @@ enum {
 	MCS_HT40_SGI,
 };
 
+/* identification for fake ACK */
+u16 custom_id=4321;
+
 /*********************/
 /* Aggregation logic */
 /*********************/
@@ -2324,28 +2327,76 @@ static void ath_tx_complete(struct ath_softc *sc, struct sk_buff *skb,
 
 	ath_dbg(common, XMIT, "TX complete: skb: %p\n", skb);
 	
-	if (!(tx_flags & ATH_TX_ERROR) && hdr->addr1[0] == 0x84 && hdr->addr1[1] == 0x38 && hdr->addr1[2] == 0x35 && hdr->addr1[3] == 0x4d && hdr->addr1[4] == 0xfe && hdr->addr1[5] == 0x88)
+	if (!(tx_flags & ATH_TX_ERROR))
 	{
-		printk("TX complete: skb: %p\n", skb);
-		printk("addr1: %x %x %x %x %x %x\n", hdr->addr1[0], hdr->addr1[1], hdr->addr1[2], hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
-		printk("addr2: %x %x %x %x %x %x\n", hdr->addr2[0], hdr->addr2[1], hdr->addr2[2], hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
-		printk("addr3: %x %x %x %x %x %x\n", hdr->addr3[0], hdr->addr3[1], hdr->addr3[2], hdr->addr3[3], hdr->addr3[4], hdr->addr3[5]);
-		printk("addr4: %x %x %x %x %x %x\n", hdr->addr4[0], hdr->addr4[1], hdr->addr4[2], hdr->addr4[3], hdr->addr4[4], hdr->addr4[5]);
-
 		struct iphdr * iph = ip_hdr(skb);
-		if (iph)
+		if (iph && iph->protocol == IPPROTO_TCP)
 		{
-			printk("iph: %p\n", iph);
-			printk("saddr: %x\n", iph->saddr);
-			printk("daddr: %x\n", iph->daddr);
-			printk("iph->protocol: %d / %d\n", iph->protocol, IPPROTO_TCP);
+			printk("================================\n");
+			printk("list of acquire things for fake ack\n");
+//			printk("TX complete: skb: %p\n", skb);
+//			printk("addr1: %x %x %x %x %x %x\n", hdr->addr1[0], hdr->addr1[1], hdr->addr1[2], hdr->addr1[3], hdr->addr1[4], hdr->addr1[5]);
+//			printk("addr2: %x %x %x %x %x %x\n", hdr->addr2[0], hdr->addr2[1], hdr->addr2[2], hdr->addr2[3], hdr->addr2[4], hdr->addr2[5]);
+//			printk("addr3: %x %x %x %x %x %x\n", hdr->addr3[0], hdr->addr3[1], hdr->addr3[2], hdr->addr3[3], hdr->addr3[4], hdr->addr3[5]);
+//			printk("addr4: %x %x %x %x %x %x\n", hdr->addr4[0], hdr->addr4[1], hdr->addr4[2], hdr->addr4[3], hdr->addr4[4], hdr->addr4[5]);
 
-			if (iph->protocol && (iph->protocol == IPPROTO_TCP))
+//		struct iphdr * iph = ip_hdr(skb);
+//		if (iph && iph->protocol == IPPROTO_TCP)
+//		{
+//			printk("iph: %p\n", iph);
 			{
-				struct tcphdr * tcph;
-				tcph = (struct tcphdr *)((__u32 *)iph + iph->ihl);
-				printk("source: 0x%x : %d, dst: 0x%x : %d\n", tcph->source, tcph->source, tcph->dest, tcph->dest);
+				unsigned int saddr, daddr;
+				saddr = iph->saddr;
+				daddr = iph->daddr;
+			
+				int s1 = saddr%0x100;
+				int s4 = saddr/0x100;
+				int s2 = s4%0x100;
+				s4 /=0x100;
+				int s3 = s4%0x100;
+				s4 /= 0x100;
+				printk("saddr: %d.%d.%d.%d = %x\n", s4, s3, s2, s1, saddr);
+			
+				int d1 = daddr%0x100;
+				int d4 = daddr/0x100;
+				int d2 = d4%0x100;
+				d4 /= 0x100;
+				int d3 = d4%0x100;
+				d4 /= 0x100;
+				printk("daddr: %d.%d.%d.%d = %x\n", d4, d3, d2, d1, daddr);
 			}
+//			printk("daddr: %x\n", iph->daddr);
+//			printk("iph->protocol: %d / %d\n", iph->protocol, IPPROTO_TCP);
+//			printk("iph->id: %x\n", iph->id);
+//			printk("iph->tot_len: %u\n", iph->tot_len);
+//			printk("iph->ihl: %u\n", iph->ihl);
+//			printk("iph->version %d\n", iph->version);
+//			printk("iph-frag_off %d\n", iph->frag_off);
+//			printk("check %d\n", iph->check);
+//			printk("ttl: %d, tot_len: %d, tos: %d\n", iph->ttl, iph->tot_len, iph->tos);
+//			if (iph->protocol && (iph->protocol == IPPROTO_TCP))
+//			{
+			struct tcphdr * tcph;
+			tcph = (struct tcphdr *)((__u32 *)iph + iph->ihl);
+//			printk("tcp->hlen: %u\n", tcph->doff);
+			printk("source port: %d, dst port: %d\n", tcph->source, tcph->dest);
+			printk("seq: %u, ack_seq: %u, window: %d\n", ntohl(tcph->seq), ntohl(tcph->ack_seq), tcph->window);
+			printk("TCP Segment Len: %u\n", iph->tot_len - ((iph->ihl + tcph->doff)<<2));
+			printk("syn: %d\n", tcph->syn);
+			printk("fake id: %u\n",custom_id);
+//			struct sk_buff * newskb;
+//			skb_copy(skb, newskb);
+//			struct iphdr * newiph = ip_hdr(newskb);
+//			newiph->saddr = iph->daddr;
+//			newiph->daddr = iph->saddr;
+//			struct iphdr * testiph = ip_hdr(newskb);
+//			printk("new s: %x, d: %x\n", newiph->saddr, newiph->daddr);
+//			printk("test s: %x, d: %x\n",testiph->saddr, testiph->daddr);
+//			printk("iph s: %x, d: %x\n", iph->saddr, iph->daddr);
+			custom_id++;
+//			}
+	
+//			kfree_skb(newskb);
 		}
 
 			
